@@ -15,6 +15,8 @@ from clases.simpleBayes import SimpleNaiveBayes
 from clases.loadFiles import LoadFiles
 from clases.gemini_insights import GeminiInsightGenerator
 import clases.naiveBayes as nbSimple
+import clases.ollama_insights as ollama
+import clases.bayesGenerator as bg
 
 
 # Inicializar el generador de insights 
@@ -22,57 +24,8 @@ import clases.naiveBayes as nbSimple
 def init_gemini():
     return GeminiInsightGenerator()
 
-def generar_lista_evidencias(df, target, tipos, p_fallo, num_evidencias, cat_evidencias, resultados_condicionales=None, modelo_metrics=None):
-    """
-    Genera una lista de evidencias (hallazgos) a partir de los datos y análisis.
-    """
-    evidencias = []
-    
-    # 1. Probabilidad a priori
-    evidencias.append(f"La probabilidad a priori de {target} es {p_fallo:.3f}.")
-    
-    # 2. Estadísticas descriptivas de variables numéricas respecto a target
-    num_cols = [col for col in tipos['numerica'] if col != target]
-    for col in num_cols:
-        media_global = df[col].mean()
-        media_clase1 = df[df[target]==1][col].mean()
-        media_clase0 = df[df[target]==0][col].mean()
-        evidencias.append(f"Media de {col}: global={media_global:.2f}, cuando {target}=1: {media_clase1:.2f}, cuando {target}=0: {media_clase0:.2f}.")
-    
-    # 3. Distribución de variables categóricas
-    cat_cols = [col for col in tipos['categorica'] if col != target] + tipos['binaria']
-    for col in cat_cols:
-        # Proporción de target=1 por cada categoría
-        prop = df.groupby(col)[target].mean().sort_values(ascending=False)
-        for cat, prob in prop.items():
-            evidencias.append(f"Cuando {col} = {cat}, la probabilidad de {target}=1 es {prob:.3f}.")
-    
-    # 4. Resultados de probabilidades condicionales (si se proporcionan)
-    if resultados_condicionales:
-        for res in resultados_condicionales:
-            evid = res['Evidencia']
-            cond = res['Condición']
-            p_bayes = list(res.values())[4]
-            evidencias.append(f"Para la evidencia '{evid} {cond}'")
-            if p_bayes:
-                evidencias.append(f"Según Bayes, la probabilidad sería {p_bayes:.3f}.")
-    
-    # 5. Métricas del modelo (si se proporcionan)
-    if modelo_metrics:
-        acc = modelo_metrics.get('accuracy')
-        sens = modelo_metrics.get('sensibilidad')
-        espec = modelo_metrics.get('especificidad')
-        if acc is not None:
-            evidencias.append(f"El modelo Naive Bayes tiene una exactitud (accuracy) de {acc:.3f}.")
-            evidencias.append(f"Sensibilidad (tasa de detección de {target}=1): {sens:.3f}.")
-            evidencias.append(f"Especificidad (tasa de detección de {target}=0): {espec:.3f}.")
-        # Matriz de confusión
-        cm = modelo_metrics.get('cm')
-        if cm is not None:
-            vn, fp, fn, vp = cm.ravel()
-            evidencias.append(f"Matriz de confusión: Verdaderos Negativos={vn}, Falsos Positivos={fp}, Falsos Negativos={fn}, Verdaderos Positivos={vp}.")
-    
-    return evidencias
+def init_ollama():
+    return ollama.LlamaInsightGenerator()
 
 def mostrar():
     try:
@@ -81,7 +34,8 @@ def mostrar():
         st.info("No se ha detectado la carga de datos, por favor cargue un archivo.")
         return
     # Selección de variable objetivo
-    gemini = init_gemini()
+    #gemini = init_gemini()
+    ollama = init_ollama()
     df = st.session_state['df']
     todas_columnas = df.columns.tolist()
     filter_columnas = tipos['binaria']
@@ -108,12 +62,11 @@ def mostrar():
         p_fallo = df[target].mean()
         st.metric(f"Probabilidad P({target})", f"{p_fallo:.4f}")
         
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4 = st.tabs([
             "Calculo de probabilidades",
             "Visualizaciones", 
             "Gráfico temporal",
-            "Clasificador Naive Bayes simple",
-            "Insights"
+            "Clasificador Naive Bayes simple"
         ])
         
         with tab1:
@@ -186,27 +139,48 @@ def mostrar():
                         resultados.append({
                             'Evidencia': col,
                             'Condición': condicion,
-                            f'P({col})': p_evid,
-                            #f'P({target}|{col}) empírica': p_fallo_dado_evid,
-                            f'P({col}|{target})': p_evid_dado_fallo,
-                            f'P({target}|{col}) Bayes': p_fallo_dado_evid_bayes
+                            f'P(B)': p_evid,
+                            f'P(B|A)': p_evid_dado_fallo,
+                            f'P(A|B) Bayes': p_fallo_dado_evid_bayes
                         })
                 
                 if resultados:
+                    print(resultados)
                     df_resultados = pd.DataFrame(resultados)
                     st.subheader("Resultados de probabilidades condicionales")
                     st.dataframe(df_resultados)
                     
                     # Gráfico de comparación
                     fig = go.Figure()
-                    fig.add_trace(go.Bar(x=df_resultados['Evidencia'], y=[p_fallo]*len(df_resultados), name=f'P({col})', marker_color='lightgray'))
+                    fig.add_trace(go.Bar(x=df_resultados['Evidencia'], y=[p_fallo]*len(df_resultados), name='P(B)', marker_color='lightgray'))
                     #fig.add_trace(go.Bar(x=df_resultados['Evidencia'], y=df_resultados[f'P({target}|{col}) empírica'], name=f'P({target}|{col}) empírica', marker_color='skyblue'))
-                    fig.add_trace(go.Bar(x=df_resultados['Evidencia'], y=df_resultados[f'P({target}|{col}) Bayes'], name=f'P({target}|{col}) Bayes', marker_color='orange'))
+                    fig.add_trace(go.Bar(x=df_resultados['Evidencia'], y=df_resultados['P(A|B) Bayes'], name=f'P(A|B) Bayes', marker_color='orange'))
                     fig.update_layout(title='Comparación de probabilidades', xaxis_title='Evidencia', yaxis_title='Probabilidad', barmode='group')
                     st.plotly_chart(fig, use_container_width=True)
+                    
+                    if st.button("Generar insights"): 
+                        # --------------------------------------------------------
+                        # Insights con  IA
+                        evidencias = ollama.generar_lista_evidencias(
+                            df=df,
+                            target=target,
+                            tipos=tipos,
+                            p_fallo=p_fallo,
+                            resultados_condicionales=resultados
+                        )
+                        # Insights con Gemini IA
+                        # --------------------------------------------------------
+                        st.subheader("Insights generados por IA")
+                        # Reemplaza la instancia de GeminiInsightGenerator por LlamaInsightGenerator
+                        insights = ollama.generar_insights(p_fallo, target, df, evidencias, tipos)
+                        # Generar insights
+                        
+                        # Mostrar insights
+                        for insight in insights:
+                            st.write(insight)   
                 else:
                     st.warning("No se pudieron calcular probabilidades para las evidencias seleccionadas.")
-        
+                    
         with tab2:
             # --------------------------------------------------------
             # Visualizaciones adicionales
@@ -250,46 +224,7 @@ def mostrar():
                     st.plotly_chart(fig, use_container_width=True)
         
         with tab4:            
-            nbSimple.ejecutar_clasificador_manual(df, target, tipos)            
-        
-        with tab5:
-            uploaded_file = st.session_state['uploaded_file']
-            
-            evidencias = generar_lista_evidencias(
-                df=df,
-                target=target,
-                tipos=tipos,
-                p_fallo=p_fallo,
-                num_evidencias=num_evidencias,
-                cat_evidencias=cat_evidencias,
-                resultados_condicionales=resultados,  # de la pestaña de cálculo
-                modelo_metrics=st.session_state.get('metricas_manual', None)
-            )
-            # Insights con Gemini IA
-            # --------------------------------------------------------
-            st.subheader("🤖 Insights generados por Gemini IA")
-            
-            # Generar insights
-            insights = gemini.generar_insights(
-                p_fallo=p_fallo,
-                target=target,
-                df=df,
-                evidencias_impacto=evidencias,
-                tipos=tipos,
-                contexto_adicional={
-                    'nombre_archivo': uploaded_file.name,
-                    'tamaño_dataset': len(df)
-                }
-            )
-            
-            # Mostrar insights
-            for insight in insights:
-                st.write(insight)
-            
-            # Opción para regenerar
-            col1, col2, col3 = st.columns([1, 1, 2])
-            with col1:
-                if st.button("🔄 Regenerar insights"):
-                    st.rerun()
+            #nbSimple.ejecutar_clasificador_manual(df, target, tipos)            
+            bg.main()
     else:
         st.info("No hay suficientes datos para generar insights. Prueba con otro conjunto.")
